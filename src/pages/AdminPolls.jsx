@@ -1,0 +1,281 @@
+/**
+ * AdminPolls — Targeted Polls & Surveys
+ * Create, manage, and view poll results
+ */
+import { useState, useEffect } from 'react'
+import { pollService } from '../services/pollService'
+
+export default function AdminPolls() {
+  const [activeTab, setActiveTab] = useState('active')
+  const [showCreate, setShowCreate] = useState(false)
+  const [targetAudience, setTargetAudience] = useState('All Students')
+  const [specificTarget, setSpecificTarget] = useState('')
+
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [deadline, setDeadline] = useState('')
+  const [options, setOptions] = useState(['', ''])
+  
+  const [polls, setPolls] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  const faculties = ['Science', 'Arts', 'Engineering', 'Social Sciences']
+  const departments = ['Computer Science', 'Mathematics', 'Physics', 'History', 'Economics']
+
+  const fetchPolls = async () => {
+    try {
+      const res = await pollService.getPolls()
+      setPolls(Array.isArray(res) ? res : [])
+    } catch (err) {
+      console.error('Failed to fetch polls:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchPolls()
+  }, [])
+
+  const handleCreatePoll = async () => {
+    if (!title || !description || !deadline || options.some(o => !o)) {
+      alert('Please fill out all fields and options.')
+      return
+    }
+    
+    let finalTarget = targetAudience
+    if (targetAudience !== 'All Students') {
+      if (!specificTarget) {
+        alert('Please select a specific target.')
+        return
+      }
+      finalTarget = specificTarget
+    }
+
+    try {
+      await pollService.createPoll({
+        title,
+        description,
+        target: finalTarget,
+        deadline,
+        options
+      })
+      setShowCreate(false)
+      setTitle('')
+      setDescription('')
+      setDeadline('')
+      setOptions(['', ''])
+      setTargetAudience('All Students')
+      setSpecificTarget('')
+      fetchPolls()
+    } catch (err) {
+      console.error(err)
+      alert('Failed to create poll.')
+    }
+  }
+
+  const filteredPolls = polls.filter(poll => {
+    if (activeTab === 'all') return true
+    return poll.status === activeTab
+  })
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-end justify-between">
+        <div>
+          <p className="text-[11px] font-bold text-gold-dark uppercase tracking-[0.15em] mb-1">Engagement</p>
+          <h1 className="text-[1.8rem] lg:text-[2.2rem] font-bold text-ink leading-tight tracking-tight">Polls & Surveys</h1>
+        </div>
+        <button
+          onClick={() => setShowCreate(!showCreate)}
+          className="px-5 py-2.5 rounded-xl bg-maroon text-white font-semibold text-[13px] shadow-[0_2px_8px_rgba(128,0,0,0.2)] hover:bg-maroon-dark transition-all flex items-center gap-2"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+          Create Poll
+        </button>
+      </div>
+
+      {/* Create Form */}
+      {showCreate && (
+        <div className="bg-paper rounded-2xl border border-mist/50 p-6">
+          <h2 className="text-[15px] font-bold text-ink mb-4">New Poll</h2>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-[11px] font-semibold text-ink/40 uppercase tracking-[0.15em] mb-2">Title</label>
+              <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g., Academic Calendar Feedback" className="w-full px-4 py-3 text-[14px] rounded-xl bg-cream border border-mist/50 text-ink placeholder:text-ink/25 focus:outline-none focus:ring-2 focus:ring-maroon/15 transition-all" />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-ink/40 uppercase tracking-[0.15em] mb-2">Description</label>
+              <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What is this poll about?" rows={2} className="w-full px-4 py-3 text-[13px] rounded-xl bg-cream border border-mist/50 text-ink placeholder:text-ink/25 focus:outline-none focus:ring-2 focus:ring-maroon/15 transition-all resize-none" />
+            </div>
+
+            {/* Options UI */}
+            <div>
+              <label className="block text-[11px] font-semibold text-ink/40 uppercase tracking-[0.15em] mb-2">Poll Options</label>
+              <div className="space-y-2">
+                {options.map((opt, i) => (
+                  <div key={i} className="flex gap-2">
+                    <input 
+                      value={opt} 
+                      onChange={(e) => {
+                        const newOpts = [...options]
+                        newOpts[i] = e.target.value
+                        setOptions(newOpts)
+                      }} 
+                      placeholder={`Option ${i + 1}`} 
+                      className="flex-1 px-4 py-3 text-[14px] rounded-xl bg-cream border border-mist/50 text-ink placeholder:text-ink/25 focus:outline-none focus:ring-2 focus:ring-maroon/15 transition-all" 
+                    />
+                    {options.length > 2 && (
+                      <button 
+                        onClick={() => setOptions(options.filter((_, idx) => idx !== i))}
+                        className="px-4 rounded-xl border border-mist/50 text-maroon hover:bg-mist/30"
+                      >
+                        X
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <button 
+                  onClick={() => setOptions([...options, ''])}
+                  className="text-[12px] font-semibold text-[#1266f1] hover:underline"
+                >
+                  + Add another option
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-ink/40 uppercase tracking-[0.15em] mb-2">Target Audience</label>
+                <select 
+                  value={targetAudience}
+                  onChange={(e) => {
+                    setTargetAudience(e.target.value)
+                    setSpecificTarget('')
+                  }}
+                  className="w-full px-4 py-3 text-[14px] rounded-xl bg-cream border border-mist/50 text-ink focus:outline-none focus:ring-2 focus:ring-maroon/15 appearance-none cursor-pointer bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2016%2016%22%3E%3Cpath%20fill%3D%22%23800000%22%20d%3D%22M4.5%206l3.5%204%203.5-4z%22/%3E%3C/svg%3E')] bg-no-repeat bg-[right_12px_center]"
+                >
+                  <option value="All Students">All Students</option>
+                  <option value="Specific Faculty">Specific Faculty</option>
+                  <option value="Specific Department">Specific Department</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-ink/40 uppercase tracking-[0.15em] mb-2">Deadline</label>
+                <input value={deadline} onChange={(e) => setDeadline(e.target.value)} type="date" className="w-full px-4 py-3 text-[14px] rounded-xl bg-cream border border-mist/50 text-ink focus:outline-none focus:ring-2 focus:ring-maroon/15 transition-all" />
+              </div>
+            </div>
+
+            {/* Dynamic Specific Target Dropdown */}
+            {targetAudience !== 'All Students' && (
+              <div className="animate-fade-in">
+                <label className="block text-[11px] font-semibold text-ink/40 uppercase tracking-[0.15em] mb-2">
+                  Select {targetAudience === 'Specific Faculty' ? 'Faculty' : 'Department'}
+                </label>
+                <select 
+                  value={specificTarget}
+                  onChange={(e) => setSpecificTarget(e.target.value)}
+                  className="w-full px-4 py-3 text-[14px] rounded-xl bg-cream border border-mist/50 text-ink focus:outline-none focus:ring-2 focus:ring-maroon/15 appearance-none cursor-pointer bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2016%2016%22%3E%3Cpath%20fill%3D%22%23800000%22%20d%3D%22M4.5%206l3.5%204%203.5-4z%22/%3E%3C/svg%3E')] bg-no-repeat bg-[right_12px_center]"
+                >
+                  <option value="" disabled>-- Select --</option>
+                  {targetAudience === 'Specific Faculty' 
+                    ? faculties.map(f => <option key={f} value={f}>{f}</option>)
+                    : departments.map(d => <option key={d} value={d}>{d}</option>)
+                  }
+                </select>
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-2">
+              <button onClick={() => setShowCreate(false)} className="flex-1 py-3 rounded-xl border border-mist/70 text-ink/60 font-semibold text-[13px] hover:bg-cream transition-all">Cancel</button>
+              <button onClick={handleCreatePoll} className="flex-1 py-3 rounded-xl bg-maroon text-white font-semibold text-[13px] shadow-[0_2px_8px_rgba(128,0,0,0.2)] hover:bg-maroon-dark transition-all">Create Poll</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="flex gap-2">
+        {['active', 'closed', 'all'].map(tab => {
+          const count = tab === 'all' ? 0 : polls.filter(p => p.status === tab).length;
+          return (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-4 py-2 rounded-xl text-[13px] font-semibold transition-all ${
+                activeTab === tab ? 'bg-maroon text-white shadow-sm' : 'bg-paper border border-mist/50 text-ink/40 hover:text-ink/60'
+              }`}
+            >
+              {tab.charAt(0).toUpperCase() + tab.slice(1)} {tab !== 'all' && `(${count})`}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Polls */}
+      <div className="space-y-4">
+        {filteredPolls.length === 0 ? (
+          <div className="text-center py-12 bg-paper rounded-2xl border border-mist/50">
+            <p className="text-[14px] text-ink/40 font-medium">No polls found.</p>
+          </div>
+        ) : (
+          filteredPolls.map(poll => {
+            const maxResult = poll.results ? Math.max(...poll.results) : 0
+          return (
+            <div key={poll.id} className="bg-paper rounded-2xl border border-mist/50 p-6">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-[15px] font-bold text-ink">{poll.title}</h3>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                      poll.status === 'active' ? 'bg-resolved/10 text-resolved' : 'bg-mist text-ink/30'
+                    }`}>
+                      {poll.status}
+                    </span>
+                  </div>
+                  <p className="text-[13px] text-ink/40">{poll.description}</p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-[1.2rem] font-bold text-ink font-mono">{poll.totalResponses}</p>
+                  <p className="text-[10px] text-ink/25">responses</p>
+                </div>
+              </div>
+
+              {/* Results */}
+              <div className="space-y-2">
+                {poll.options.map((opt, i) => {
+                  const resultCount = poll.results ? poll.results[i] : 0
+                  const totalResponses = poll.totalResponses || 1 // prevent div by zero
+                  const pct = poll.totalResponses ? Math.round((resultCount / poll.totalResponses) * 100) : 0
+                  const isMax = resultCount === maxResult && resultCount > 0
+                  return (
+                    <div key={i}>
+                      <div className="flex items-center justify-between text-[12px] mb-1">
+                        <span className="text-ink/50">{opt}</span>
+                        <span className="font-mono text-ink/60 font-semibold">{pct}%</span>
+                      </div>
+                      <div className="h-2 bg-mist-light rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-700 ${isMax ? 'bg-maroon' : 'bg-gold/60'}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div className="flex items-center justify-between mt-4 pt-4 border-t border-mist/20">
+                <span className="text-[11px] text-ink/25">Target: {poll.target}</span>
+                <span className="text-[11px] text-ink/25">Deadline: {poll.deadline}</span>
+              </div>
+            </div>
+          )
+        }))}
+      </div>
+    </div>
+  )
+}

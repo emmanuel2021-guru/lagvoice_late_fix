@@ -1,0 +1,398 @@
+/**
+ * TicketDetail — Full ticket view with intelligent tracking pipeline
+ * Complaint lifecycle adapts based on category and current stage
+ * Dark mode support via shared useDarkMode hook
+ */
+import { useState, useEffect } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { useAuth } from '../hooks/useAuth'
+import { ticketService } from '../services/ticketService'
+import { TICKET_STATUS_CONFIG } from '../utils/constants'
+import { formatRelativeTime } from '../utils/formatters'
+import { useDarkMode } from '../hooks/useDarkMode'
+import StatusPill from '../components/common/StatusPill/StatusPill'
+
+import { STORAGE_KEYS, readArray } from '../utils/storage'
+
+// ── Intelligent Pipeline Steps ──
+const FULL_PIPELINE = [
+  { key: 'submitted', label: 'Complaint Submitted', description: 'Your feedback has been received and assigned a tracking ID.' },
+  { key: 'received_qa', label: 'Received by Quality Assurance', description: 'SERVICOM/QA office has acknowledged your complaint.' },
+  { key: 'assigned_dsa', label: 'Assigned to DSA', description: 'The complaint has been assigned to the Dean of Student Affairs for review.' },
+  { key: 'dsa_reviewing', label: 'DSA Reviewing Complaint', description: 'The DSA team is reviewing the complaint details and evidence.' },
+  { key: 'forwarded_dept', label: 'Forwarded to Relevant Department', description: 'The complaint has been forwarded to the department responsible for resolution.' },
+  { key: 'dept_working', label: 'Department Working on Issue', description: 'The assigned department is actively working on resolving the issue.' },
+  { key: 'resolution_submitted', label: 'Resolution Submitted', description: 'The department has submitted a proposed resolution for QA review.' },
+  { key: 'resolved', label: 'Resolved', description: 'The issue has been resolved. You can reopen this ticket if the problem persists.' },
+]
+
+const CATEGORY_PIPELINES = {
+  infrastructure: FULL_PIPELINE,
+  academic: [
+    { key: 'submitted', label: 'Complaint Submitted', description: 'Your feedback has been received and assigned a tracking ID.' },
+    { key: 'received_qa', label: 'Received by Quality Assurance', description: 'SERVICOM/QA office has acknowledged your complaint.' },
+    { key: 'assigned_dept', label: 'Assigned to Faculty', description: 'The complaint has been forwarded to the Faculty of the course in question.' },
+    { key: 'hod_reviewing', label: 'HOD Reviewing', description: 'The Head of Department is reviewing the complaint.' },
+    { key: 'dept_working', label: 'Action in Progress', description: 'The department is taking action on the reported issue.' },
+    { key: 'resolution_submitted', label: 'Resolution Submitted', description: 'A proposed resolution has been submitted for QA review.' },
+    { key: 'resolved', label: 'Resolved', description: 'The issue has been resolved.' },
+  ],
+  welfare: [
+    { key: 'submitted', label: 'Complaint Submitted', description: 'Your feedback has been received and assigned a tracking ID.' },
+    { key: 'received_qa', label: 'Received by Quality Assurance', description: 'SERVICOM/QA office has acknowledged your complaint.' },
+    { key: 'assigned_dsa', label: 'Assigned to DSA', description: 'This welfare concern has been routed directly to the Dean of Student Affairs.' },
+    { key: 'dsa_reviewing', label: 'DSA Reviewing', description: 'The DSA team is reviewing your welfare concern.' },
+    { key: 'intervention', label: 'Intervention in Progress', description: 'Active steps are being taken to address your welfare concern.' },
+    { key: 'resolved', label: 'Resolved', description: 'The issue has been addressed.' },
+  ],
+  admin: [
+    { key: 'submitted', label: 'Complaint Submitted', description: 'Your feedback has been received and assigned a tracking ID.' },
+    { key: 'received_qa', label: 'Received by Quality Assurance', description: 'SERVICOM/QA office has acknowledged your complaint.' },
+    { key: 'assigned_ict', label: 'Assigned to ICT/Admin', description: 'Forwarded to the relevant administrative or ICT unit.' },
+    { key: 'dept_working', label: 'Working on Issue', description: 'The team is actively working on the administrative issue.' },
+    { key: 'resolution_submitted', label: 'Resolution Submitted', description: 'A proposed resolution has been submitted for QA review.' },
+    { key: 'resolved', label: 'Resolved', description: 'The issue has been resolved.' },
+  ],
+  general: [
+    { key: 'submitted', label: 'Complaint Submitted', description: 'Your feedback has been received and assigned a tracking ID.' },
+    { key: 'received_qa', label: 'Received by Quality Assurance', description: 'SERVICOM/QA office has acknowledged your feedback.' },
+    { key: 'under_review', label: 'Under Review', description: 'Your feedback is being reviewed by the QA team.' },
+    { key: 'resolved', label: 'Acknowledged', description: 'Your feedback has been reviewed and acknowledged.' },
+  ],
+}
+
+function getProgressPercent(currentStatus, pipeline) {
+  const idx = pipeline.findIndex(s => s.key === currentStatus)
+  if (idx === -1) return 0
+  return Math.round(((idx + 1) / pipeline.length) * 100)
+}
+
+function PipelineIcon({ isDone, isCurrent }) {
+  if (isDone) {
+    return (
+      <div className="w-8 h-8 rounded-full bg-[#00b74a]/15 flex items-center justify-center shrink-0">
+        <svg className="w-4 h-4 text-[#00b74a]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+      </div>
+    )
+  }
+  if (isCurrent) {
+    return (
+      <div className="w-8 h-8 rounded-full bg-[#1266f1]/15 flex items-center justify-center shrink-0 ring-4 ring-[#1266f1]/10">
+        <div className="w-3 h-3 rounded-full bg-[#1266f1] animate-pulse" />
+      </div>
+    )
+  }
+  return (
+    <div className="w-8 h-8 rounded-full bg-[#E4E8EE] dark:bg-white/10 flex items-center justify-center shrink-0">
+      <div className="w-2 h-2 rounded-full bg-[#9fa6b2]/40" />
+    </div>
+  )
+}
+
+export default function TicketDetail() {
+  const navigate = useNavigate()
+  const { id } = useParams()
+  const dark = useDarkMode()
+  const { user, isAdmin, isFaculty, isStaff, isExternal, isNonStaff } = useAuth()
+  const canManagePipeline = isAdmin || isFaculty || isStaff || isExternal || isNonStaff
+  
+  const [comment, setComment] = useState('')
+
+  const [ticket, setTicket] = useState(null)
+  const [comments, setComments] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    const fetchTicket = async () => {
+      setLoading(true)
+      try {
+        const data = await ticketService.getTicketById(id)
+        // Ensure images is an array since it is stored as a JSON string
+        let imagesArray = []
+        if (data.images) {
+          try {
+            imagesArray = typeof data.images === 'string' ? JSON.parse(data.images) : data.images
+          } catch (e) {
+            imagesArray = []
+          }
+        }
+        setTicket({ ...data, images: imagesArray })
+        setComments(data.comments || [])
+      } catch (err) {
+        setError('Failed to fetch ticket details.')
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchTicket()
+  }, [id])
+
+  if (loading) return <div className="p-8 text-center text-ink/40">Loading ticket...</div>
+  if (error || !ticket) return <div className="p-8 text-center text-red-500">{error || 'Ticket not found'}</div>
+
+  const pipeline = CATEGORY_PIPELINES[ticket.category.toLowerCase()] || CATEGORY_PIPELINES.infrastructure
+  const currentStepIdx = ticket.status === 'resolved' 
+    ? pipeline.length - 1 
+    : Math.max(0, pipeline.findIndex(s => s.key === ticket.pipelineStep))
+  const progress = ticket.status === 'resolved' ? 100 : getProgressPercent(ticket.pipelineStep, pipeline)
+  const status = TICKET_STATUS_CONFIG[ticket.status === 'submitted' ? 'pending' : ticket.status] || TICKET_STATUS_CONFIG.pending
+  
+  // Map timeline
+  const timeline = (ticket.timeline || []).map(t => ({
+    step: t.step,
+    time: t.createdAt,
+    by: t.actor?.name || 'System'
+  }))
+
+  const author = ticket.submittedBy?.name || 'Student'
+
+  const card = dark ? 'bg-[#1e293b]' : 'bg-white'
+  const cardBorder = dark ? 'border-white/6' : 'border-[#E4E8EE]'
+  const text1 = dark ? 'text-white' : 'text-[#262626]'
+  const text2 = dark ? 'text-slate-300' : 'text-[#4f4f4f]'
+  const text3 = dark ? 'text-slate-400' : 'text-[#9fa6b2]'
+  const subtle = dark ? 'bg-white/5' : 'bg-[#F5F7FA]'
+  const hoverBg = dark ? 'hover:bg-white/5' : 'hover:bg-[#F5F7FA]'
+  const textFaint = dark ? 'text-slate-500' : 'text-[#9fa6b2]/50'
+  const placeholderTone = dark ? 'placeholder:text-slate-500' : 'placeholder:text-[#9fa6b2]'
+
+  const addComment = async () => {
+    if (!comment.trim()) return
+    try {
+      const newComment = await ticketService.addComment(ticket.id, comment)
+      setComments(prev => [...prev, newComment])
+      setComment('')
+    } catch (err) {
+      alert('Failed to add comment')
+    }
+  }
+
+  const advancePipeline = async (nextStepKey) => {
+    try {
+      const updatedTicket = await ticketService.updatePipeline(ticket.id, nextStepKey, nextStepKey === 'resolved' ? 'resolved' : 'under_review')
+      setTicket(updatedTicket)
+    } catch (err) {
+      alert('Failed to advance pipeline')
+    }
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto px-4 py-8">
+      {/* Back */}
+      <button onClick={() => navigate('/student/tickets')} className={`flex items-center gap-2 text-[13px] ${text3} hover:${text1} mb-6 transition-colors`}>
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+        </svg>
+        All Tickets
+      </button>
+
+      {/* Ticket Header */}
+      <div className={`${card} rounded-2xl border ${cardBorder} p-6 mb-4`}>
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <span className={`text-[10px] font-mono ${text3}`}>{ticket.trackingId}</span>
+            <h1 className={`text-[1.3rem] font-bold ${text1} mt-1`}>{ticket.title}</h1>
+          </div>          <StatusPill status={status} />
+        </div>
+
+        {/* Progress bar */}
+        <div className="mb-4">
+          <div className={`flex items-center justify-between text-[10px] ${text3} mb-1.5`}>
+            <span>Progress</span>
+            <span className="font-mono">{progress}%</span>
+          </div>
+          <div className={`h-1.5 ${subtle} rounded-full overflow-hidden`}>
+            <div className="h-full bg-gradient-to-r from-[#1266f1] to-[#00b74a] rounded-full transition-all duration-700" style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 text-[12px]">
+          {[
+            { label: 'Category', value: ticket.category },
+            { label: 'Subcategory', value: ticket.subcategory },
+            { label: 'Location', value: ticket.location || 'Not specified' },
+            { label: 'Submitted', value: formatRelativeTime(ticket.createdAt) },
+          ].map(item => (
+            <div key={item.label} className={`${subtle} rounded-xl p-3`}>
+              <p className={`text-[10px] ${text3} uppercase tracking-wider font-semibold mb-0.5`}>{item.label}</p>
+              <p className={`text-[13px] font-semibold ${text1}`}>{item.value}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ═══ Interactive Tracking Pipeline ═══ */}
+      <div className={`${card} rounded-2xl border ${cardBorder} p-6 mb-4`}>
+        <div className="flex items-center justify-between mb-5">
+          <h2 className={`text-[15px] font-bold ${text1}`}>Tracking Pipeline</h2>
+          <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full bg-[#1266f1]/10 text-[#1266f1]">
+            Step {currentStepIdx + 1} of {pipeline.length}
+          </span>
+        </div>
+
+        <div className="space-y-0">
+          {pipeline.map((step, i) => {
+            const isDone = i < currentStepIdx
+            const isCurrent = i === currentStepIdx
+            const isFuture = i > currentStepIdx
+            const timelineEntry = timeline.find(t => t.step === step.key)
+
+            return (
+              <div key={step.key} className="flex gap-3 relative">
+                {i < pipeline.length - 1 && (
+                  <div className={`absolute left-[15px] top-[32px] w-[2px] h-[calc(100%-8px)] ${isDone ? 'bg-[#00b74a]/30' : isCurrent ? 'bg-[#1266f1]/20' : dark ? 'bg-white/10' : 'bg-[#E4E8EE]'}`} />
+                )}
+
+                <PipelineIcon isDone={isDone} isCurrent={isCurrent} />
+
+                <div className={`flex-1 pb-5 ${isFuture ? 'opacity-40' : ''}`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className={`text-[13px] font-semibold ${isCurrent ? 'text-[#1266f1]' : isDone ? text1 : text3}`}>
+                        {step.label}
+                      </p>
+                      <p className={`text-[11px] mt-0.5 leading-relaxed ${isDone || isCurrent ? text3 : textFaint}`}>
+                        {step.description}
+                      </p>
+                    </div>
+                  </div>
+                  {timelineEntry && (
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span className={`text-[10px] ${text3} font-mono`}>{formatRelativeTime(timelineEntry.time)}</span>
+                      <span className={`text-[10px] ${textFaint}`}>·</span>
+                      <span className={`text-[10px] ${text3}`}>by {timelineEntry.by}</span>
+                    </div>
+                  )}
+                  {isCurrent && (
+                    <div className="mt-2 flex items-center gap-3">
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#1266f1]/10 text-[#1266f1] text-[10px] font-semibold">
+                        <div className="w-1.5 h-1.5 rounded-full bg-[#1266f1] animate-pulse" />
+                        In Progress
+                      </div>
+                      
+                      {canManagePipeline && i < pipeline.length - 1 && (
+                        <button
+                          onClick={() => advancePipeline(pipeline[i + 1].key)}
+                          className="px-3 py-1 bg-white dark:bg-[#1e293b] border border-[#E4E8EE] dark:border-white/10 rounded-lg text-[11px] font-medium text-[#1266f1] hover:bg-[#F5F7FA] dark:hover:bg-white/5 transition-colors shadow-sm"
+                        >
+                          Mark Done & Advance
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Description */}
+      <div className={`${card} rounded-2xl border ${cardBorder} p-6 mb-4`}>
+        <h2 className={`text-[15px] font-bold ${text1} mb-3`}>Description</h2>
+        <p className={`text-[14px] ${text2} leading-relaxed`}>{ticket.description}</p>
+
+        {/* Photo evidence */}
+        {ticket.images.length > 0 && (
+          <div className="mt-4">
+            <p className={`text-[10px] ${text3} uppercase tracking-wider font-semibold mb-2`}>Photo evidence ({ticket.images.length})</p>
+            <div className="flex flex-wrap gap-2">
+              {ticket.images.map((name, i) => (
+                <span key={i} className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium ${subtle} border ${cardBorder} ${text2}`}>
+                  <svg className="w-3 h-3 text-[#1266f1]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 10-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                  {name}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {ticket.gpsLat && ticket.gpsLng && (
+          <div className={`mt-3 flex items-center gap-2 text-[12px] ${text3}`}>
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            <span>Geo-tagged: {ticket.gpsLat.toFixed(4)}, {ticket.gpsLng.toFixed(4)}</span>
+          </div>
+        )}
+        {ticket.anonymous && (
+          <div className="mt-2 flex items-center gap-2 text-[12px] text-[#1266f1]">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+            </svg>
+            <span>Submitted anonymously</span>
+          </div>
+        )}
+      </div>
+
+      {/* Comments */}
+      <div className={`${card} rounded-2xl border ${cardBorder} p-6 mb-4`}>
+        <h2 className={`text-[15px] font-bold ${text1} mb-4`}>Comments & Updates</h2>
+        {comments.length === 0 && (
+          <div className={`rounded-xl p-4 mb-4 text-center ${subtle}`}>
+            <p className={`text-[12px] ${text3}`}>No replies yet. The Quality Assurance team will respond here as your ticket moves through the pipeline.</p>
+          </div>
+        )}
+        <div className="space-y-4 mb-4">
+          {comments.map(c => {
+            const authorName = c.author?.name || 'Unknown'
+            const authorRole = c.author?.role || 'user'
+            return (
+              <div key={c.id} className={`flex gap-3 ${authorRole === 'student' ? 'flex-row-reverse' : ''}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
+                  authorRole === 'admin' ? 'bg-[#1266f1]/10 text-[#1266f1]' : 'bg-[#ffa900]/10 text-[#ffa900]'
+                }`}>
+                  {authorName.charAt(0).toUpperCase()}
+                </div>
+                <div className={`max-w-[80%] ${authorRole === 'student' ? 'text-right' : ''}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`text-[12px] font-semibold ${text1}`}>{authorName}</span>
+                    <span className={`text-[10px] ${text3} font-mono`}>{formatRelativeTime(c.createdAt)}</span>
+                  </div>
+                  <div className={`text-[13px] ${text2} leading-relaxed rounded-xl p-3 ${
+                    authorRole === 'admin' ? `${subtle} text-left` : 'bg-[#1266f1]/[0.05] text-left'
+                  }`}>
+                    {c.message}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Add Comment */}
+        <div className={`flex gap-2 pt-3 border-t ${cardBorder}`}>
+          <input
+            value={comment}
+            onChange={e => setComment(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && addComment()}
+            placeholder="Add a comment or follow-up..."
+            className={`flex-1 px-4 py-2.5 rounded-xl ${subtle} border ${cardBorder} text-[13px] ${text1} ${placeholderTone} focus:outline-none focus:ring-2 focus:ring-[#1266f1]/15 focus:border-[#1266f1]/40 transition-all`}
+          />
+          <button
+            onClick={addComment}
+            disabled={!comment.trim()}
+            className="px-4 py-2.5 rounded-xl bg-[#1266f1] text-white text-[13px] font-semibold hover:bg-[#0e52c1] transition-all disabled:opacity-40"
+          >
+            Send
+          </button>
+        </div>
+      </div>
+
+      {/* Actions */}
+      {ticket.status === 'resolved' && (
+        <button className={`w-full py-3 rounded-xl border ${cardBorder} ${text2} font-semibold text-[14px] ${hoverBg} transition-all flex items-center justify-center gap-2`}>
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          Reopen Ticket
+        </button>
+      )}
+    </div>
+  )
+}
